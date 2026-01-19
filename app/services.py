@@ -5,9 +5,18 @@ from app.models import HospitalResult
 from app.state import bulk_progress, failed_batches, batch_results
 
 
-async def process_hospitals_background(rows, batch_id: str):
+async def process_hospitals_background(rows, batch_id: str, is_retry: bool = False):
     """Background task to process hospitals asynchronously."""
     results = []
+
+    # For retries, preserve existing successful results
+    existing_successful = []
+    original_total = len(rows)
+    if is_retry and batch_id in batch_results:
+        existing_successful = [
+            h for h in batch_results[batch_id]["hospitals"] if h.status != "failed"
+        ]
+        original_total = batch_results[batch_id]["total_hospitals"]
 
     bulk_progress[batch_id] = {
         "total": len(rows),
@@ -57,30 +66,39 @@ async def process_hospitals_background(rows, batch_id: str):
                 bulk_progress[batch_id]["failed"] += 1
                 failed_batches.setdefault(batch_id, []).append(row)
 
-        # Activate batch if all succeeded
-        if bulk_progress[batch_id]["failed"] == 0:
-            try:
-                await client.patch(f"/hospitals/batch/{batch_id}/activate")
-                for r in results:
-                    r.status = "created_and_activated"
-                bulk_progress[batch_id]["status"] = "completed"
-                activated = True
-            except Exception:
-                bulk_progress[batch_id]["status"] = "completed"
-                activated = False
-        else:
-            bulk_progress[batch_id]["status"] = "partial_failed"
-            activated = False
-
     duration = round(time.time() - start, 2)
+
+    # Merge with existing successful results for retries
+    all_hospitals = existing_successful + results
+    total_processed = len([h for h in all_hospitals if h.status != "failed"])
+    total_failed = len([h for h in all_hospitals if h.status == "failed"])
+
+    # Activate batch if all hospitals succeeded (including after retry)
+    activated = False
+    if total_failed == 0:
+        try:
+            async with httpx.AsyncClient(
+                base_url=HOSPITAL_DIRECTORY_BASE_URL, timeout=httpx.Timeout(30.0, connect=10.0)
+            ) as client:
+                await client.patch(f"/hospitals/batch/{batch_id}/activate")
+            # Update all hospitals to activated status
+            for h in all_hospitals:
+                if h.status == "created":
+                    h.status = "created_and_activated"
+            bulk_progress[batch_id]["status"] = "completed"
+            activated = True
+        except Exception:
+            bulk_progress[batch_id]["status"] = "completed"
+    else:
+        bulk_progress[batch_id]["status"] = "partial_failed"
 
     # Store final results
     batch_results[batch_id] = {
         "batch_id": batch_id,
-        "total_hospitals": len(rows),
-        "processed_hospitals": bulk_progress[batch_id]["processed"],
-        "failed_hospitals": bulk_progress[batch_id]["failed"],
+        "total_hospitals": original_total,
+        "processed_hospitals": total_processed,
+        "failed_hospitals": total_failed,
         "processing_time_seconds": duration,
         "batch_activated": activated,
-        "hospitals": results,
+        "hospitals": all_hospitals,
     }

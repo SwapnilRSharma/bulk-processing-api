@@ -35,8 +35,8 @@ async def bulk_create(background_tasks: BackgroundTasks, file: UploadFile = File
     )
 
 
-async def run_async_task(rows, batch_id: str):
-    await process_hospitals_background(rows, batch_id)
+async def run_async_task(rows, batch_id: str, is_retry: bool = False):
+    await process_hospitals_background(rows, batch_id, is_retry=is_retry)
 
 
 @app.get("/hospitals/bulk/{batch_id}/status")
@@ -72,7 +72,7 @@ async def retry_batch(batch_id: str, background_tasks: BackgroundTasks):
 
     bulk_progress[batch_id] = {"total": len(rows), "processed": 0, "failed": 0, "status": "queued"}
 
-    background_tasks.add_task(run_async_task, rows, batch_id)
+    background_tasks.add_task(run_async_task, rows, batch_id, is_retry=True)
 
     return {
         "batch_id": batch_id,
