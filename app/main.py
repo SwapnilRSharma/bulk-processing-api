@@ -9,6 +9,12 @@ from app.ws import bulk_progress_ws
 app = FastAPI(title="Hospital Bulk Processing API")
 
 
+@app.get("/health")
+def health():
+    """Lightweight liveness probe."""
+    return {"status": "ok"}
+
+
 @app.post("/hospitals/bulk", response_model=BulkUploadResponse)
 async def bulk_create(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     """
